@@ -22,6 +22,9 @@ import {
   User,
   Sun,
   Moon,
+  LayoutDashboard,
+  Wallet,
+  Clock,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import MetricsSection from "./hr/dashboard/MetricsSection";
@@ -30,6 +33,8 @@ import RecentActivities from "./hr/dashboard/RecentActivities";
 import EmployeeManagement from "./hr/employee/EmployeeManagement";
 import PayrollProcessing from "./hr/payroll/PayrollProcessing";
 import LeaveManagement from "./hr/leave/LeaveManagement";
+import HRModule from "./hr/HRModule";
+import HRNinjaModule from "./hr/HRNinjaModule";
 
 type Module =
   | "dashboard"
@@ -49,18 +54,18 @@ type Module =
   | "accounting"
   | "projects"
   | "maintenance"
-  | "assets";
+  | "assets"
+  | "hr"
+  | "timeattendance"
+  | "timeoff";
 
 interface HomeProps {
-  darkMode?: boolean;
-  toggleDarkMode?: () => void;
+  onLogout?: () => void;
 }
 
-const Home: React.FC<HomeProps> = ({
-  darkMode = true,
-  toggleDarkMode = () => {},
-}) => {
+const Home: React.FC<HomeProps> = ({ onLogout = () => {} }) => {
   const [activeModule, setActiveModule] = useState<Module>("dashboard");
+  const [darkMode, setDarkMode] = useState<boolean>(false);
   const navigate = useNavigate();
 
   // Mock data for metrics
@@ -88,96 +93,105 @@ const Home: React.FC<HomeProps> = ({
     },
   };
 
-  // Function to handle module navigation
   const handleModuleChange = (module: Module) => {
     setActiveModule(module);
+    
+    // Navegar para a página do módulo correspondente
+    if (module === "hr") {
+      navigate("/hr");
+    }
   };
 
-  // Render the active module content
-  const renderModuleContent = () => {
+  const toggleDarkMode = () => {
+    setDarkMode(!darkMode);
+    // Implementar lógica para alternar entre temas claro e escuro
+  };
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      localStorage.removeItem("isAuthenticated");
+      if (onLogout) onLogout();
+    } catch (error) {
+      console.error("Erro ao fazer logout:", error);
+    }
+  };
+
+  const handleProfileClick = () => {
+    navigate("/profile");
+  };
+
+  const DashboardContent = () => {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="md:col-span-2 space-y-6">
+          <MetricsSection
+            totalEmployees={metricsData.totalEmployees}
+            pendingLeaveRequests={metricsData.pendingLeaveRequests}
+            upcomingEvaluations={metricsData.upcomingEvaluations}
+            payrollStatus={metricsData.payrollStatus}
+          />
+          <QuickAccessCards onCardClick={(tab) => handleModuleChange(tab as Module)} />
+        </div>
+        <div className="space-y-6">
+          <RecentActivities />
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h3 className="text-lg font-medium mb-4">Eventos Futuros</h3>
+            <div className="space-y-3">
+              <div className="p-3 bg-blue-50 rounded-md border border-blue-100">
+                <p className="text-sm font-medium">Reunião de Equipe</p>
+                <p className="text-xs text-gray-500">Amanhã, 10:00 - 11:30</p>
+              </div>
+              <div className="p-3 bg-green-50 rounded-md border border-green-100">
+                <p className="text-sm font-medium">Treinamento de Segurança</p>
+                <p className="text-xs text-gray-500">23/05/2023, 14:00 - 16:00</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const hrModules = [
+    {
+      name: "Dashboard RH",
+      href: "/hr",
+      icon: <LayoutDashboard className="h-5 w-5" />,
+      description: "Visão geral dos recursos humanos"
+    },
+    {
+      name: "Funcionários",
+      href: "/hr/employees",
+      icon: <Users className="h-5 w-5" />,
+      description: "Gerenciamento de funcionários"
+    },
+    {
+      name: "Folha de Pagamento",
+      href: "/hr/payroll",
+      icon: <Wallet className="h-5 w-5" />,
+      description: "Processamento de salários"
+    },
+    {
+      name: "Ponto e Presença",
+      href: "/hr/timeattendance",
+      icon: <Clock className="h-5 w-5" />,
+      description: "Registro de ponto e escalas"
+    },
+    {
+      name: "Férias e Ausências",
+      href: "/hr/timeoff",
+      icon: <Settings className="h-5 w-5" />,
+      description: "Gerenciamento de férias e licenças"
+    }
+  ];
+
+  const renderModule = () => {
     switch (activeModule) {
       case "dashboard":
-        return (
-          <div
-            className={`p-6 space-y-6 ${darkMode ? "bg-gray-900" : "bg-gray-50"}`}
-          >
-            <div className="mb-6">
-              <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent mb-2">
-                Painel ERPFOUR
-              </h1>
-              <p className={`${darkMode ? "text-gray-400" : "text-gray-600"}`}>
-                Bem-vindo ao seu sistema ERP completo para gestão empresarial
-                integrada
-              </p>
-            </div>
-            <MetricsSection
-              totalEmployees={metricsData.totalEmployees}
-              pendingLeaveRequests={metricsData.pendingLeaveRequests}
-              upcomingEvaluations={metricsData.upcomingEvaluations}
-              payrollStatus={metricsData.payrollStatus}
-            />
-            <QuickAccessCards
-              cards={[
-                {
-                  title: "Recursos Humanos",
-                  description:
-                    "Gerencie funcionários, contratos e documentos de RH",
-                  icon: <Users className="h-6 w-6" />,
-                  onClick: () => handleModuleChange("employees"),
-                },
-                {
-                  title: "Vendas & Marketing",
-                  description:
-                    "Gerencie pedidos, clientes e campanhas de marketing",
-                  icon: <ShoppingCart className="h-6 w-6" />,
-                  onClick: () => handleModuleChange("sales"),
-                },
-                {
-                  title: "Gestão de Inventário",
-                  description:
-                    "Controle níveis de estoque, transferências e avaliações",
-                  icon: <Warehouse className="h-6 w-6" />,
-                  onClick: () => handleModuleChange("inventory"),
-                },
-                {
-                  title: "Finanças & Contabilidade",
-                  description:
-                    "Gerencie transações financeiras, relatórios e conformidade fiscal",
-                  icon: <Landmark className="h-6 w-6" />,
-                  onClick: () => handleModuleChange("finance"),
-                },
-                {
-                  title: "Produção",
-                  description:
-                    "Planeje produção, gerencie BOM e acompanhe operações",
-                  icon: <Factory className="h-6 w-6" />,
-                  onClick: () => handleModuleChange("manufacturing"),
-                },
-                {
-                  title: "Logística & SCM",
-                  description:
-                    "Gerencie compras, envios e cadeia de suprimentos",
-                  icon: <Truck className="h-6 w-6" />,
-                  onClick: () => handleModuleChange("logistics"),
-                },
-                {
-                  title: "Gestão de Projetos",
-                  description:
-                    "Acompanhe projetos, tarefas e alocação de recursos",
-                  icon: <BookOpen className="h-6 w-6" />,
-                  onClick: () => handleModuleChange("projects"),
-                },
-                {
-                  title: "Análises & Relatórios",
-                  description: "Gere insights e inteligência de negócios",
-                  icon: <TrendingUp className="h-6 w-6" />,
-                  onClick: () => handleModuleChange("analytics"),
-                },
-              ]}
-            />
-            <RecentActivities />
-          </div>
-        );
+        return <DashboardContent />;
+      case "hr":
+        return null;
       case "employees":
         return <EmployeeManagement />;
       case "payroll":
@@ -344,6 +358,34 @@ const Home: React.FC<HomeProps> = ({
             </p>
           </div>
         );
+      case "hr":
+        return <HRNinjaModule />;
+      case "timeattendance":
+        return (
+          <div
+            className={`p-6 space-y-6 ${darkMode ? "bg-gray-900" : "bg-gray-50"}`}
+          >
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent mb-2">
+              Ponto e Presença
+            </h1>
+            <p className={`${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+              O módulo de ponto e presença estará disponível em breve.
+            </p>
+          </div>
+        );
+      case "timeoff":
+        return (
+          <div
+            className={`p-6 space-y-6 ${darkMode ? "bg-gray-900" : "bg-gray-50"}`}
+          >
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent mb-2">
+              Férias e Ausências
+            </h1>
+            <p className={`${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+              O módulo de férias e ausências estará disponível em breve.
+            </p>
+          </div>
+        );
       default:
         return (
           <div
@@ -358,15 +400,6 @@ const Home: React.FC<HomeProps> = ({
           </div>
         );
     }
-  };
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    navigate("/login");
-  };
-
-  const handleProfileClick = () => {
-    navigate("/profile");
   };
 
   return (
@@ -447,8 +480,8 @@ const Home: React.FC<HomeProps> = ({
               <SidebarItem
                 icon={<Users className="h-5 w-5" />}
                 label="Recursos Humanos"
-                active={activeModule === "employees"}
-                onClick={() => handleModuleChange("employees")}
+                active={activeModule === "hr"}
+                onClick={() => handleModuleChange("hr")}
                 darkMode={darkMode}
               />
               <SidebarItem
@@ -577,7 +610,7 @@ const Home: React.FC<HomeProps> = ({
         <div
           className={`flex-1 overflow-auto ${darkMode ? "bg-gray-900" : "bg-gray-50"}`}
         >
-          {renderModuleContent()}
+          {renderModule()}
         </div>
       </div>
     </div>

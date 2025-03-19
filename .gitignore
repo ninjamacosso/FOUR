@@ -7,6 +7,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependency directories
 node_modules
 dist
 dist-ssr
@@ -22,6 +23,27 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build output
+build
+coverage
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+
+# Dependency lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
 
 !node_modules/.vite
 

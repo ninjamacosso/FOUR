@@ -27,559 +27,731 @@ import {
 } from "@/components/ui/table";
 import { Calculator, Download, FileText, HelpCircle, Save } from "lucide-react";
 import { formatKwanza } from "@/lib/currency";
+import { supabase } from "@/lib/supabase";
+import { 
+  Employee, 
+  PayrollItem, 
+  PayrollPeriod,
+  angolanTaxRates,
+  calculateIncomeTax,
+  calculateSocialSecurity,
+  calculateEmployerSocialSecurity,
+  calculateNetSalary,
+  calculateOvertimeAmount
+} from "@/types/hr.types";
+import { toast } from "@/components/ui/use-toast";
 
-// Interfaces
-interface EmployeeData {
+// Interface para os dados de funcionário com informações de salário
+interface EmployeePayrollData {
   id: string;
-  name: string;
+  first_name: string;
+  last_name: string;
   position: string;
-  baseSalary: number;
+  base_salary: number;
   allowances: number;
-  overtimeHours: number;
-  overtimeRate: number;
+  overtime_hours: number;
+  overtime_rate: number;
 }
 
-interface TaxRates {
-  incomeTax: number;
-  socialSecurity: number;
-  otherDeductions: number;
-}
-
+// Interface para os resultados calculados da folha de pagamento
 interface CalculatedEmployeePayroll {
-  employeeId: string;
-  name: string;
-  grossSalary: number;
-  incomeTax: number;
-  socialSecurity: number;
-  otherDeductions: number;
-  netSalary: number;
+  employee_id: string;
+  full_name: string;
+  position: string;
+  base_salary: number;
+  allowances: number;
+  overtime_hours: number;
+  overtime_rate: number;
+  overtime_amount: number;
+  gross_salary: number;
+  income_tax: number;
+  social_security: number;
+  other_deductions: number;
+  net_salary: number;
+  employer_social_security: number;
 }
 
-interface CalculatedPayroll {
-  employees: CalculatedEmployeePayroll[];
-  totalGross: number;
-  totalNet: number;
-  totalTax: number;
-  totalSocialSecurity: number;
+// Interface para o resumo da folha de pagamento
+interface PayrollSummary {
+  total_employees: number;
+  total_gross: number;
+  total_net: number;
+  total_income_tax: number;
+  total_social_security: number;
+  total_employer_social_security: number;
+  total_other_deductions: number;
 }
 
+// Interface para as propriedades do componente
 interface PayrollCalculatorProps {
-  employeeData?: EmployeeData[];
-  taxRates?: TaxRates;
-  onSave?: (calculatedData: CalculatedPayroll) => void;
+  payrollPeriodId?: string;
+  onSave?: (calculatedData: CalculatedEmployeePayroll[], summary: PayrollSummary) => void;
   onExport?: (format: "pdf" | "excel") => void;
 }
 
-// Dados padrão
-const defaultEmployeeData: EmployeeData[] = [
-  {
-    id: "001",
-    name: "João Silva",
-    position: "Desenvolvedor de Software",
-    baseSalary: 250000,
-    allowances: 25000,
-    overtimeHours: 10,
-    overtimeRate: 1.5,
-  },
-  {
-    id: "002",
-    name: "Maria Fernandes",
-    position: "Gerente de Projetos",
-    baseSalary: 350000,
-    allowances: 35000,
-    overtimeHours: 5,
-    overtimeRate: 1.5,
-  },
-  {
-    id: "003",
-    name: "Carlos Eduardo",
-    position: "Especialista de RH",
-    baseSalary: 200000,
-    allowances: 20000,
-    overtimeHours: 8,
-    overtimeRate: 1.5,
-  },
-];
-
-const defaultTaxRates: TaxRates = {
-  incomeTax: 0.17, // 17% taxa de imposto de renda para Angola
-  socialSecurity: 0.03, // 3% contribuição para segurança social
-  otherDeductions: 0.01, // 1% outras deduções
-};
-
 const PayrollCalculator: React.FC<PayrollCalculatorProps> = ({
-  employeeData = defaultEmployeeData,
-  taxRates = defaultTaxRates,
-  onSave = () => {},
-  onExport = () => {},
+  payrollPeriodId,
+  onSave,
+  onExport,
 }) => {
-  const [activeTab, setActiveTab] = useState<
-    "calculation" | "taxSettings" | "results"
-  >("calculation");
-  const [calculatedPayroll, setCalculatedPayroll] =
-    useState<CalculatedPayroll | null>(null);
-  const [customTaxRates, setCustomTaxRates] = useState<TaxRates>(taxRates);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  // Estados
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employeePayrollData, setEmployeePayrollData] = useState<EmployeePayrollData[]>([]);
+  const [calculatedPayroll, setCalculatedPayroll] = useState<CalculatedEmployeePayroll[]>([]);
+  const [payrollSummary, setPayrollSummary] = useState<PayrollSummary>({
+    total_employees: 0,
+    total_gross: 0,
+    total_net: 0,
+    total_income_tax: 0,
+    total_social_security: 0,
+    total_employer_social_security: 0,
+    total_other_deductions: 0,
+  });
+  const [payrollPeriods, setPayrollPeriods] = useState<PayrollPeriod[]>([]);
+  const [selectedPeriodId, setSelectedPeriodId] = useState<string>(payrollPeriodId || "");
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [activeTab, setActiveTab] = useState("calculator");
 
-  // Função para calcular a folha de pagamento
-  const calculatePayroll = async () => {
-    setIsLoading(true);
-    setError(null);
+  // Carregar funcionários e períodos de folha de pagamento
+  useEffect(() => {
+    fetchEmployees();
+    fetchPayrollPeriods();
+  }, []);
+
+  // Carregar dados de folha de pagamento quando um período é selecionado
+  useEffect(() => {
+    if (selectedPeriodId) {
+      fetchPayrollData(selectedPeriodId);
+    }
+  }, [selectedPeriodId]);
+
+  // Buscar funcionários do Supabase
+  const fetchEmployees = async () => {
     try {
-      const calculatedEmployees = employeeData.map((employee) => {
-        const overtimePay =
-          (employee.baseSalary / 176) *
-          employee.overtimeHours *
-          employee.overtimeRate;
-        const grossSalary =
-          employee.baseSalary + employee.allowances + overtimePay;
-        const incomeTax = grossSalary * customTaxRates.incomeTax;
-        const socialSecurity = grossSalary * customTaxRates.socialSecurity;
-        const otherDeductions = grossSalary * customTaxRates.otherDeductions;
-        const netSalary =
-          grossSalary - incomeTax - socialSecurity - otherDeductions;
+      const { data, error } = await supabase
+        .from("employees")
+        .select("*")
+        .eq("status", "active");
 
-        return {
-          employeeId: employee.id,
-          name: employee.name,
-          grossSalary,
-          incomeTax,
-          socialSecurity,
-          otherDeductions,
-          netSalary,
-        };
+      if (error) throw error;
+      
+      if (data) {
+        // Converter o status para o tipo correto
+        const typedEmployees = data.map(emp => ({
+          ...emp,
+          status: emp.status as Employee["status"]
+        }));
+        
+        setEmployees(typedEmployees);
+        
+        // Inicializar dados de folha de pagamento com valores padrão
+        const initialPayrollData = data.map(emp => ({
+          id: emp.id,
+          first_name: emp.first_name,
+          last_name: emp.last_name,
+          position: emp.position,
+          base_salary: 0, // Será preenchido com dados reais
+          allowances: 0,
+          overtime_hours: 0,
+          overtime_rate: 1.5, // Taxa padrão de hora extra (50% adicional)
+        }));
+        
+        setEmployeePayrollData(initialPayrollData);
+      }
+    } catch (error) {
+      console.error("Erro ao buscar funcionários:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível carregar os funcionários.",
+        variant: "destructive",
       });
-
-      const totals = calculatedEmployees.reduce(
-        (acc, emp) => ({
-          totalGross: acc.totalGross + emp.grossSalary,
-          totalNet: acc.totalNet + emp.netSalary,
-          totalTax: acc.totalTax + emp.incomeTax,
-          totalSocialSecurity: acc.totalSocialSecurity + emp.socialSecurity,
-        }),
-        { totalGross: 0, totalNet: 0, totalTax: 0, totalSocialSecurity: 0 },
-      );
-
-      const result: CalculatedPayroll = {
-        employees: calculatedEmployees,
-        ...totals,
-      };
-
-      setCalculatedPayroll(result);
-      return result;
-    } catch (err) {
-      setError("Erro ao calcular folha de pagamento");
-      console.error(err);
-      return null;
-    } finally {
-      setIsLoading(false);
     }
   };
 
-  const handleSave = async () => {
-    const result = await calculatePayroll();
-    if (result) onSave(result);
+  // Buscar períodos de folha de pagamento do Supabase
+  const fetchPayrollPeriods = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("payroll_periods")
+        .select("*")
+        .order("start_date", { ascending: false });
+
+      if (error) throw error;
+      
+      if (data) {
+        // Converter o status para o tipo correto
+        const typedPayrollPeriods = data.map(period => ({
+          ...period,
+          status: period.status as PayrollPeriod["status"]
+        }));
+        
+        setPayrollPeriods(typedPayrollPeriods);
+        
+        // Se não houver período selecionado e existirem períodos, selecione o mais recente
+        if (!selectedPeriodId && typedPayrollPeriods.length > 0) {
+          setSelectedPeriodId(typedPayrollPeriods[0].id);
+        }
+      }
+    } catch (error) {
+      console.error("Erro ao buscar períodos de folha de pagamento:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível carregar os períodos de folha de pagamento.",
+        variant: "destructive",
+      });
+    }
   };
 
-  const handleExport = async (format: "pdf" | "excel") => {
-    if (!calculatedPayroll) {
-      const result = await calculatePayroll();
-      if (result) onExport(format);
-    } else {
-      onExport(format);
+  // Buscar dados de folha de pagamento para um período específico
+  const fetchPayrollData = async (periodId: string) => {
+    try {
+      // Buscar contratos ativos para obter salários base
+      const { data: contractsData, error: contractsError } = await supabase
+        .from("contracts")
+        .select("*")
+        .eq("status", "active");
+
+      if (contractsError) throw contractsError;
+
+      // Buscar itens de folha de pagamento existentes para este período
+      const { data: payrollItemsData, error: payrollItemsError } = await supabase
+        .from("payroll_items")
+        .select("*")
+        .eq("payroll_period_id", periodId);
+
+      if (payrollItemsError) throw payrollItemsError;
+
+      // Atualizar dados de folha de pagamento com valores dos contratos e itens existentes
+      if (contractsData) {
+        const updatedPayrollData = employeePayrollData.map(emp => {
+          // Encontrar contrato ativo do funcionário
+          const contract = contractsData.find(c => c.employee_id === emp.id);
+          
+          // Encontrar item de folha de pagamento existente
+          const payrollItem = payrollItemsData?.find(p => p.employee_id === emp.id);
+          
+          return {
+            ...emp,
+            base_salary: contract?.salary || 0,
+            allowances: payrollItem?.allowances || 0,
+            overtime_hours: payrollItem?.overtime_hours || 0,
+            overtime_rate: payrollItem?.overtime_rate || 1.5,
+          };
+        });
+        
+        setEmployeePayrollData(updatedPayrollData);
+        
+        // Se existirem itens de folha de pagamento, calcular imediatamente
+        if (payrollItemsData && payrollItemsData.length > 0) {
+          calculatePayroll();
+        }
+      }
+    } catch (error) {
+      console.error("Erro ao buscar dados de folha de pagamento:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível carregar os dados de folha de pagamento.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Atualizar dados de um funcionário específico
+  const updateEmployeeData = (
+    employeeId: string,
+    field: keyof EmployeePayrollData,
+    value: number | string
+  ) => {
+    setEmployeePayrollData(prev =>
+      prev.map(emp =>
+        emp.id === employeeId
+          ? { ...emp, [field]: typeof value === "string" ? parseFloat(value) || 0 : value }
+          : emp
+      )
+    );
+  };
+
+  // Calcular folha de pagamento
+  const calculatePayroll = () => {
+    setIsCalculating(true);
+    
+    try {
+      // Calcular folha de pagamento para cada funcionário
+      const calculated = employeePayrollData.map(emp => {
+        // Calcular valor das horas extras
+        const overtimeAmount = calculateOvertimeAmount(
+          emp.base_salary,
+          emp.overtime_hours,
+          emp.overtime_rate
+        );
+        
+        // Calcular salário bruto
+        const grossSalary = emp.base_salary + emp.allowances + overtimeAmount;
+        
+        // Calcular imposto de renda
+        const incomeTax = calculateIncomeTax(grossSalary, angolanTaxRates);
+        
+        // Calcular seguridade social
+        const socialSecurity = calculateSocialSecurity(grossSalary, angolanTaxRates);
+        
+        // Calcular contribuição do empregador para seguridade social
+        const employerSocialSecurity = calculateEmployerSocialSecurity(grossSalary, angolanTaxRates);
+        
+        // Outras deduções (valor fixo para demonstração)
+        const otherDeductions = 0;
+        
+        // Calcular salário líquido
+        const netSalary = calculateNetSalary(
+          emp.base_salary,
+          emp.allowances,
+          overtimeAmount,
+          incomeTax,
+          socialSecurity,
+          otherDeductions
+        );
+        
+        return {
+          employee_id: emp.id,
+          full_name: `${emp.first_name} ${emp.last_name}`,
+          position: emp.position,
+          base_salary: emp.base_salary,
+          allowances: emp.allowances,
+          overtime_hours: emp.overtime_hours,
+          overtime_rate: emp.overtime_rate,
+          overtime_amount: overtimeAmount,
+          gross_salary: grossSalary,
+          income_tax: incomeTax,
+          social_security: socialSecurity,
+          other_deductions: otherDeductions,
+          net_salary: netSalary,
+          employer_social_security: employerSocialSecurity,
+        };
+      });
+      
+      setCalculatedPayroll(calculated);
+      
+      // Calcular resumo da folha de pagamento
+      const summary: PayrollSummary = {
+        total_employees: calculated.length,
+        total_gross: calculated.reduce((sum, emp) => sum + emp.gross_salary, 0),
+        total_net: calculated.reduce((sum, emp) => sum + emp.net_salary, 0),
+        total_income_tax: calculated.reduce((sum, emp) => sum + emp.income_tax, 0),
+        total_social_security: calculated.reduce((sum, emp) => sum + emp.social_security, 0),
+        total_employer_social_security: calculated.reduce((sum, emp) => sum + emp.employer_social_security, 0),
+        total_other_deductions: calculated.reduce((sum, emp) => sum + emp.other_deductions, 0),
+      };
+      
+      setPayrollSummary(summary);
+      
+      // Chamar callback onSave se fornecido
+      if (onSave) {
+        onSave(calculated, summary);
+      }
+      
+      toast({
+        title: "Cálculo concluído",
+        description: "A folha de pagamento foi calculada com sucesso.",
+      });
+    } catch (error) {
+      console.error("Erro ao calcular folha de pagamento:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível calcular a folha de pagamento.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCalculating(false);
+    }
+  };
+
+  // Salvar folha de pagamento no Supabase
+  const savePayroll = async () => {
+    if (!selectedPeriodId || calculatedPayroll.length === 0) {
+      toast({
+        title: "Erro",
+        description: "Selecione um período e calcule a folha de pagamento antes de salvar.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    setIsSaving(true);
+    
+    try {
+      // Preparar itens de folha de pagamento para inserção/atualização
+      const payrollItems = calculatedPayroll.map(emp => ({
+        payroll_period_id: selectedPeriodId,
+        employee_id: emp.employee_id,
+        base_salary: emp.base_salary,
+        allowances: emp.allowances,
+        overtime_hours: emp.overtime_hours,
+        overtime_rate: emp.overtime_rate,
+        income_tax: emp.income_tax,
+        social_security: emp.social_security,
+        other_deductions: emp.other_deductions,
+        net_salary: emp.net_salary,
+      }));
+      
+      // Excluir itens existentes para este período
+      const { error: deleteError } = await supabase
+        .from("payroll_items")
+        .delete()
+        .eq("payroll_period_id", selectedPeriodId);
+      
+      if (deleteError) throw deleteError;
+      
+      // Inserir novos itens
+      const { error: insertError } = await supabase
+        .from("payroll_items")
+        .insert(payrollItems);
+      
+      if (insertError) throw insertError;
+      
+      // Atualizar status do período para "completed"
+      const { error: updateError } = await supabase
+        .from("payroll_periods")
+        .update({
+          status: "completed",
+          processed_by: "current_user", // Idealmente, usar ID do usuário atual
+          processed_at: new Date().toISOString(),
+        })
+        .eq("id", selectedPeriodId);
+      
+      if (updateError) throw updateError;
+      
+      toast({
+        title: "Folha de pagamento salva",
+        description: "A folha de pagamento foi salva com sucesso.",
+      });
+    } catch (error) {
+      console.error("Erro ao salvar folha de pagamento:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível salvar a folha de pagamento.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Exportar folha de pagamento
+  const exportPayroll = async (format: "pdf" | "excel") => {
+    if (calculatedPayroll.length === 0) {
+      toast({
+        title: "Erro",
+        description: "Calcule a folha de pagamento antes de exportar.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    setIsExporting(true);
+    
+    try {
+      // Simulação de exportação
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
+      // Chamar callback onExport se fornecido
+      if (onExport) {
+        onExport(format);
+      }
+      
+      toast({
+        title: "Exportação concluída",
+        description: `A folha de pagamento foi exportada em formato ${format.toUpperCase()}.`,
+      });
+    } catch (error) {
+      console.error(`Erro ao exportar folha de pagamento como ${format}:`, error);
+      toast({
+        title: "Erro",
+        description: `Não foi possível exportar a folha de pagamento como ${format}.`,
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
     }
   };
 
   return (
-    <div className="w-full h-full bg-white p-6">
-      <Card className="w-full">
-        <CardHeader>
-          <div className="flex justify-between items-center">
-            <div>
-              <CardTitle className="text-2xl">
-                Calculadora de Folha de Pagamento
-              </CardTitle>
-              <CardDescription>
-                Calcule salários de funcionários com conformidade fiscal
-                angolana
-              </CardDescription>
-            </div>
-            <Calculator className="h-8 w-8 text-primary" />
-          </div>
-        </CardHeader>
-        <CardContent>
-          {error && (
-            <div className="bg-red-100 text-red-700 p-4 rounded mb-4">
-              {error}
-            </div>
-          )}
-
-          <Tabs
-            value={activeTab}
-            onValueChange={(value) => setActiveTab(value as any)}
-            className="w-full"
-          >
-            <TabsList className="grid w-full grid-cols-3 mb-6">
-              <TabsTrigger value="calculation" disabled={isLoading}>
-                Cálculo
-              </TabsTrigger>
-              <TabsTrigger value="taxSettings" disabled={isLoading}>
-                Configurações Fiscais
-              </TabsTrigger>
-              <TabsTrigger value="results" disabled={isLoading}>
-                Resultados
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="calculation" className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Seleção de Funcionários</CardTitle>
-                    <CardDescription>
-                      Selecione funcionários para cálculo da folha
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {isLoading ? (
-                      <div className="text-center py-4">Carregando...</div>
-                    ) : (
-                      <div className="space-y-4">
-                        {employeeData.map((employee) => (
-                          <div
-                            key={employee.id}
-                            className="flex items-center space-x-2 p-2 border rounded-md"
-                          >
-                            <div className="flex-1">
-                              <p className="font-medium">{employee.name}</p>
-                              <p className="text-sm text-muted-foreground">
-                                {employee.position}
-                              </p>
-                            </div>
-                            <div className="text-right">
-                              <p className="font-medium">
-                                {formatKwanza(employee.baseSalary)}
-                              </p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Parâmetros de Cálculo</CardTitle>
-                    <CardDescription>
-                      Configure parâmetros adicionais
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      <div>
-                        <label className="text-sm font-medium">
-                          Período de Pagamento
-                        </label>
-                        <Select defaultValue="current" disabled={isLoading}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione o período" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="current">Mês Atual</SelectItem>
-                            <SelectItem value="previous">
-                              Mês Anterior
-                            </SelectItem>
-                            <SelectItem value="custom">
-                              Período Personalizado
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div>
-                        <label className="text-sm font-medium">
-                          Incluir Bônus
-                        </label>
-                        <Select defaultValue="no" disabled={isLoading}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione a opção" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="yes">Sim</SelectItem>
-                            <SelectItem value="no">Não</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div>
-                        <label className="text-sm font-medium">
-                          Data de Pagamento
-                        </label>
-                        <Input
-                          type="date"
-                          defaultValue={new Date().toISOString().split("T")[0]}
-                          disabled={isLoading}
-                        />
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-              <div className="flex justify-end space-x-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setActiveTab("taxSettings")}
-                  disabled={isLoading}
-                >
-                  Próximo: Configurações Fiscais
-                </Button>
-                <Button onClick={calculatePayroll} disabled={isLoading}>
-                  {isLoading ? "Calculando..." : "Calcular"}
-                </Button>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="taxSettings" className="space-y-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Configuração Fiscal Angolana</CardTitle>
-                  <CardDescription>
-                    Configure taxas de acordo com a legislação angolana
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">
-                        Taxa de Imposto de Renda (%)
-                      </label>
-                      <div className="flex items-center">
-                        <Input
-                          type="number"
-                          value={customTaxRates.incomeTax * 100}
-                          onChange={(e) =>
-                            setCustomTaxRates({
-                              ...customTaxRates,
-                              incomeTax: Number(e.target.value) / 100,
-                            })
-                          }
-                          min="0"
-                          max="100"
-                          step="0.1"
-                          disabled={isLoading}
-                        />
-                        <HelpCircle className="h-4 w-4 ml-2 text-muted-foreground" />
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Taxa padrão: 17%
-                      </p>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">
-                        Segurança Social (%)
-                      </label>
-                      <div className="flex items-center">
-                        <Input
-                          type="number"
-                          value={customTaxRates.socialSecurity * 100}
-                          onChange={(e) =>
-                            setCustomTaxRates({
-                              ...customTaxRates,
-                              socialSecurity: Number(e.target.value) / 100,
-                            })
-                          }
-                          min="0"
-                          max="100"
-                          step="0.1"
-                          disabled={isLoading}
-                        />
-                        <HelpCircle className="h-4 w-4 ml-2 text-muted-foreground" />
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Contribuição do funcionário: 3%
-                      </p>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">
-                        Outras Deduções (%)
-                      </label>
-                      <div className="flex items-center">
-                        <Input
-                          type="number"
-                          value={customTaxRates.otherDeductions * 100}
-                          onChange={(e) =>
-                            setCustomTaxRates({
-                              ...customTaxRates,
-                              otherDeductions: Number(e.target.value) / 100,
-                            })
-                          }
-                          min="0"
-                          max="100"
-                          step="0.1"
-                          disabled={isLoading}
-                        />
-                        <HelpCircle className="h-4 w-4 ml-2 text-muted-foreground" />
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Deduções adicionais
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-              <div className="flex justify-between">
-                <Button
-                  variant="outline"
-                  onClick={() => setActiveTab("calculation")}
-                  disabled={isLoading}
-                >
-                  Voltar
-                </Button>
-                <div className="space-x-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => setActiveTab("results")}
-                    disabled={isLoading}
-                  >
-                    Próximo: Resultados
-                  </Button>
-                  <Button onClick={calculatePayroll} disabled={isLoading}>
-                    {isLoading ? "Calculando..." : "Calcular"}
-                  </Button>
+    <Card className="w-full">
+      <CardHeader>
+        <CardTitle className="text-2xl font-bold">Calculadora de Folha de Pagamento</CardTitle>
+        <CardDescription>
+          Calcule a folha de pagamento dos funcionários com base nos salários e benefícios.
+        </CardDescription>
+      </CardHeader>
+      
+      <CardContent>
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="grid grid-cols-3 mb-4">
+            <TabsTrigger value="calculator">Calculadora</TabsTrigger>
+            <TabsTrigger value="results">Resultados</TabsTrigger>
+            <TabsTrigger value="summary">Resumo</TabsTrigger>
+          </TabsList>
+          
+          {/* Aba de Calculadora */}
+          <TabsContent value="calculator">
+            <div className="space-y-4">
+              <div className="flex items-center space-x-4">
+                <div className="w-full">
+                  <label className="text-sm font-medium">Período de Pagamento</label>
+                  <Select value={selectedPeriodId} onValueChange={setSelectedPeriodId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione um período" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {payrollPeriods.map(period => (
+                        <SelectItem key={period.id} value={period.id}>
+                          {period.name} ({new Date(period.start_date).toLocaleDateString()} - {new Date(period.end_date).toLocaleDateString()})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
+                
+                <Button
+                  onClick={calculatePayroll}
+                  disabled={isCalculating || !selectedPeriodId}
+                  className="mt-6"
+                >
+                  {isCalculating ? (
+                    <>Calculando...</>
+                  ) : (
+                    <>
+                      <Calculator className="mr-2 h-4 w-4" />
+                      Calcular
+                    </>
+                  )}
+                </Button>
               </div>
-            </TabsContent>
-
-            <TabsContent value="results" className="space-y-4">
-              {isLoading ? (
-                <div className="flex flex-col items-center justify-center py-12">
-                  <Calculator className="h-12 w-12 text-muted-foreground mb-4 animate-spin" />
-                  <h3 className="text-lg font-medium">Calculando...</h3>
-                </div>
-              ) : calculatedPayroll ? (
-                <>
+              
+              <div className="border rounded-md">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Funcionário</TableHead>
+                      <TableHead>Cargo</TableHead>
+                      <TableHead>Salário Base (Kz)</TableHead>
+                      <TableHead>Subsídios (Kz)</TableHead>
+                      <TableHead>Horas Extras</TableHead>
+                      <TableHead>Taxa de Hora Extra</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {employeePayrollData.map(emp => (
+                      <TableRow key={emp.id}>
+                        <TableCell>{emp.first_name} {emp.last_name}</TableCell>
+                        <TableCell>{emp.position}</TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            value={emp.base_salary}
+                            onChange={e => updateEmployeeData(emp.id, "base_salary", e.target.value)}
+                            className="w-full"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            value={emp.allowances}
+                            onChange={e => updateEmployeeData(emp.id, "allowances", e.target.value)}
+                            className="w-full"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            value={emp.overtime_hours}
+                            onChange={e => updateEmployeeData(emp.id, "overtime_hours", e.target.value)}
+                            className="w-full"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            value={emp.overtime_rate}
+                            onChange={e => updateEmployeeData(emp.id, "overtime_rate", e.target.value)}
+                            className="w-full"
+                            step="0.1"
+                            min="1"
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </TabsContent>
+          
+          {/* Aba de Resultados */}
+          <TabsContent value="results">
+            {calculatedPayroll.length > 0 ? (
+              <div className="border rounded-md">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Funcionário</TableHead>
+                      <TableHead>Salário Base</TableHead>
+                      <TableHead>Subsídios</TableHead>
+                      <TableHead>Horas Extras</TableHead>
+                      <TableHead>Salário Bruto</TableHead>
+                      <TableHead>IRT</TableHead>
+                      <TableHead>Seg. Social</TableHead>
+                      <TableHead>Outras Deduções</TableHead>
+                      <TableHead>Salário Líquido</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {calculatedPayroll.map(emp => (
+                      <TableRow key={emp.employee_id}>
+                        <TableCell>{emp.full_name}</TableCell>
+                        <TableCell>{formatKwanza(emp.base_salary)}</TableCell>
+                        <TableCell>{formatKwanza(emp.allowances)}</TableCell>
+                        <TableCell>
+                          {emp.overtime_hours}h ({formatKwanza(emp.overtime_amount)})
+                        </TableCell>
+                        <TableCell className="font-medium">{formatKwanza(emp.gross_salary)}</TableCell>
+                        <TableCell className="text-red-500">-{formatKwanza(emp.income_tax)}</TableCell>
+                        <TableCell className="text-red-500">-{formatKwanza(emp.social_security)}</TableCell>
+                        <TableCell className="text-red-500">-{formatKwanza(emp.other_deductions)}</TableCell>
+                        <TableCell className="font-bold">{formatKwanza(emp.net_salary)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <p className="text-muted-foreground">
+                  Calcule a folha de pagamento para ver os resultados.
+                </p>
+              </div>
+            )}
+          </TabsContent>
+          
+          {/* Aba de Resumo */}
+          <TabsContent value="summary">
+            {calculatedPayroll.length > 0 ? (
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4">
                   <Card>
-                    <CardHeader>
-                      <CardTitle>Resultados da Folha</CardTitle>
-                      <CardDescription>
-                        Salários calculados com deduções fiscais
-                      </CardDescription>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-lg">Resumo da Folha</CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Funcionário</TableHead>
-                            <TableHead>Salário Bruto</TableHead>
-                            <TableHead>Imposto de Renda</TableHead>
-                            <TableHead>Segurança Social</TableHead>
-                            <TableHead>Outras Deduções</TableHead>
-                            <TableHead>Salário Líquido</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {calculatedPayroll.employees.map((employee) => (
-                            <TableRow key={employee.employeeId}>
-                              <TableCell className="font-medium">
-                                {employee.name}
-                              </TableCell>
-                              <TableCell>
-                                {formatKwanza(employee.grossSalary)}
-                              </TableCell>
-                              <TableCell>
-                                {formatKwanza(employee.incomeTax)}
-                              </TableCell>
-                              <TableCell>
-                                {formatKwanza(employee.socialSecurity)}
-                              </TableCell>
-                              <TableCell>
-                                {formatKwanza(employee.otherDeductions)}
-                              </TableCell>
-                              <TableCell className="font-bold">
-                                {formatKwanza(employee.netSalary)}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
+                      <dl className="space-y-2">
+                        <div className="flex justify-between">
+                          <dt className="text-muted-foreground">Total de Funcionários:</dt>
+                          <dd className="font-medium">{payrollSummary.total_employees}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-muted-foreground">Total Bruto:</dt>
+                          <dd className="font-medium">{formatKwanza(payrollSummary.total_gross)}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-muted-foreground">Total Líquido:</dt>
+                          <dd className="font-bold">{formatKwanza(payrollSummary.total_net)}</dd>
+                        </div>
+                      </dl>
                     </CardContent>
-                    <CardFooter className="flex justify-between border-t pt-4">
-                      <div>
-                        <p className="text-sm font-medium">
-                          Total Bruto:{" "}
-                          {formatKwanza(calculatedPayroll.totalGross)}
-                        </p>
-                        <p className="text-sm font-medium">
-                          Total Líquido:{" "}
-                          {formatKwanza(calculatedPayroll.totalNet)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium">
-                          Total de Impostos:{" "}
-                          {formatKwanza(calculatedPayroll.totalTax)}
-                        </p>
-                        <p className="text-sm font-medium">
-                          Total de Segurança Social:{" "}
-                          {formatKwanza(calculatedPayroll.totalSocialSecurity)}
-                        </p>
-                      </div>
-                    </CardFooter>
                   </Card>
-                  <div className="flex justify-between">
-                    <Button
-                      variant="outline"
-                      onClick={() => setActiveTab("taxSettings")}
-                    >
-                      Voltar
-                    </Button>
-                    <div className="space-x-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => handleExport("pdf")}
-                        className="flex items-center"
-                        disabled={isLoading}
-                      >
-                        <FileText className="mr-2 h-4 w-4" />
-                        Exportar PDF
-                      </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => handleExport("excel")}
-                        className="flex items-center"
-                        disabled={isLoading}
-                      >
-                        <Download className="mr-2 h-4 w-4" />
-                        Exportar Excel
-                      </Button>
-                      <Button
-                        onClick={handleSave}
-                        className="flex items-center"
-                        disabled={isLoading}
-                      >
-                        <Save className="mr-2 h-4 w-4" />
-                        Salvar Folha
-                      </Button>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-12">
-                  <Calculator className="h-12 w-12 text-muted-foreground mb-4" />
-                  <h3 className="text-lg font-medium">Nenhum Cálculo Ainda</h3>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Por favor, calcule a folha primeiro
-                  </p>
-                  <Button onClick={calculatePayroll} disabled={isLoading}>
-                    {isLoading ? "Calculando..." : "Calcular Agora"}
-                  </Button>
+                  
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-lg">Impostos e Contribuições</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <dl className="space-y-2">
+                        <div className="flex justify-between">
+                          <dt className="text-muted-foreground">Total IRT:</dt>
+                          <dd className="font-medium">{formatKwanza(payrollSummary.total_income_tax)}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-muted-foreground">Seg. Social (Funcionários):</dt>
+                          <dd className="font-medium">{formatKwanza(payrollSummary.total_social_security)}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-muted-foreground">Seg. Social (Empresa):</dt>
+                          <dd className="font-medium">{formatKwanza(payrollSummary.total_employer_social_security)}</dd>
+                        </div>
+                      </dl>
+                    </CardContent>
+                  </Card>
                 </div>
-              )}
-            </TabsContent>
-          </Tabs>
-        </CardContent>
-      </Card>
-    </div>
+                
+                <div className="border p-4 rounded-md bg-muted/50">
+                  <h3 className="font-medium mb-2">Custo Total para a Empresa</h3>
+                  <p className="text-2xl font-bold">
+                    {formatKwanza(payrollSummary.total_gross + payrollSummary.total_employer_social_security)}
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Inclui salários brutos e contribuições da empresa para a seguridade social.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <p className="text-muted-foreground">
+                  Calcule a folha de pagamento para ver o resumo.
+                </p>
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
+      </CardContent>
+      
+      <CardFooter className="flex justify-between">
+        <div className="flex space-x-2">
+          <Button
+            variant="outline"
+            onClick={() => exportPayroll("pdf")}
+            disabled={isExporting || calculatedPayroll.length === 0}
+          >
+            {isExporting ? (
+              <>Exportando...</>
+            ) : (
+              <>
+                <FileText className="mr-2 h-4 w-4" />
+                Exportar PDF
+              </>
+            )}
+          </Button>
+          
+          <Button
+            variant="outline"
+            onClick={() => exportPayroll("excel")}
+            disabled={isExporting || calculatedPayroll.length === 0}
+          >
+            {isExporting ? (
+              <>Exportando...</>
+            ) : (
+              <>
+                <Download className="mr-2 h-4 w-4" />
+                Exportar Excel
+              </>
+            )}
+          </Button>
+        </div>
+        
+        <Button
+          onClick={savePayroll}
+          disabled={isSaving || calculatedPayroll.length === 0}
+        >
+          {isSaving ? (
+            <>Salvando...</>
+          ) : (
+            <>
+              <Save className="mr-2 h-4 w-4" />
+              Salvar Folha
+            </>
+          )}
+        </Button>
+      </CardFooter>
+    </Card>
   );
 };
 

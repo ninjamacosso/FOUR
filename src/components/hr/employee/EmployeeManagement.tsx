@@ -1,9 +1,15 @@
 import React, { useState, useEffect } from "react";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { useNavigate } from "react-router-dom";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -11,328 +17,467 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Users, Search, Filter, Plus, Download, Upload } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { toast } from "@/components/ui/use-toast";
+import { supabase } from "@/lib/supabase";
+import { Employee, departments, positions } from "@/types/hr.types";
 import EmployeeTable from "./EmployeeTable";
 import EmployeeDetail from "./EmployeeDetail";
+import EmployeeOnboarding from "./EmployeeOnboarding";
+import {
+  Download,
+  FileUp,
+  Filter,
+  MoreHorizontal,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+  Upload,
+  UserPlus,
+  Users,
+} from "lucide-react";
 
-// Interfaces
+// Interface para opções de filtro
 interface FilterOption {
   id: string;
   name: string;
 }
 
-interface Employee {
-  id: string;
-  // Add other employee properties as needed
-}
-
+// Interface para as propriedades do componente
 interface EmployeeManagementProps {
-  activeTab?: "list" | "details";
-  selectedEmployeeId?: string;
-  onTabChange?: (tab: "list" | "details") => void;
+  activeTab?: "list" | "details" | "onboarding";
+  selectedEmployeeId?: string | null;
+  onTabChange?: (tab: "list" | "details" | "onboarding") => void;
   onEmployeeSelect?: (id: string) => void;
   onAddEmployee?: () => void;
   onImportEmployees?: () => void;
   onExportEmployees?: () => void;
 }
 
-interface EmployeeTableProps {
-  onViewDetails: (id: string) => void;
-  onEdit: (id: string) => void;
-  onDelete: (id: string) => void;
-  onViewDocuments: (id: string) => void;
-  employees: Employee[];
-  isLoading: boolean;
-}
-
-interface EmployeeDetailProps {
-  employeeId: string;
-  onBack: () => void;
-  onEdit: (id: string) => void;
-}
-
 const EmployeeManagement: React.FC<EmployeeManagementProps> = ({
   activeTab = "list",
-  selectedEmployeeId = "",
+  selectedEmployeeId = null,
   onTabChange = () => {},
   onEmployeeSelect = () => {},
   onAddEmployee = () => {},
   onImportEmployees = () => {},
   onExportEmployees = () => {},
 }) => {
+  // Estados
+  const [activeView, setActiveView] = useState<"list" | "details" | "onboarding">("list");
+  const [currentTab, setCurrentTab] = useState<"list" | "details" | "onboarding">(activeTab);
+  const [currentEmployeeId, setCurrentEmployeeId] = useState<string | null>(selectedEmployeeId);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [filteredEmployees, setFilteredEmployees] = useState<Employee[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>("");
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const [showAddEmployeeDialog, setShowAddEmployeeDialog] = useState<boolean>(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState<boolean>(false);
+  const [employeeToDelete, setEmployeeToDelete] = useState<string>("");
+  const [newEmployee, setNewEmployee] = useState<Partial<Employee>>({
+    first_name: "",
+    last_name: "",
+    email: "",
+    phone: "",
+    position: "",
+    department: "",
+    status: "active",
+    join_date: new Date().toISOString().split("T")[0],
+  });
+  
+  const navigate = useNavigate();
 
-  const departments: FilterOption[] = [
-    { id: "all", name: "Todos os Departamentos" },
-    { id: "it", name: "TI" },
-    { id: "hr", name: "Recursos Humanos" },
-    { id: "finance", name: "Finanças" },
-    { id: "marketing", name: "Marketing" },
-    { id: "operations", name: "Operações" },
-  ];
-
-  const statuses: FilterOption[] = [
-    { id: "all", name: "Todos os Status" },
-    { id: "active", name: "Ativo" },
-    { id: "inactive", name: "Inativo" },
-    { id: "on-leave", name: "De Férias" },
-  ];
-
+  // Efeito para carregar funcionários ao montar o componente
   useEffect(() => {
-    const fetchEmployees = async () => {
-      setIsLoading(true);
-      try {
-        // Simulating API call - replace with actual API endpoint
-        const response = await new Promise<Employee[]>((resolve) => {
-          setTimeout(() => resolve([]), 1000);
-        });
-        setEmployees(response);
-        setError(null);
-      } catch (err) {
-        setError("Erro ao carregar funcionários");
-        console.error(err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
     fetchEmployees();
-  }, [searchTerm, departmentFilter, statusFilter]);
+  }, []);
 
-  const handleViewDetails = (id: string) => {
-    onEmployeeSelect(id);
-    onTabChange("details");
-  };
+  // Efeito para filtrar funcionários quando os filtros ou a lista mudam
+  useEffect(() => {
+    filterEmployees();
+  }, [employees, searchTerm, departmentFilter, statusFilter]);
 
-  const handleEditEmployee = (id: string) => {
-    onEmployeeSelect(id);
-    onTabChange("details");
-  };
+  // Efeito para sincronizar o estado interno com as props
+  useEffect(() => {
+    setCurrentTab(activeTab);
+    setCurrentEmployeeId(selectedEmployeeId);
+  }, [activeTab, selectedEmployeeId]);
 
-  const handleDeleteEmployee = async (id: string) => {
+  // Buscar funcionários do Supabase
+  const fetchEmployees = async () => {
+    setIsLoading(true);
     try {
-      // Add actual API call here
-      console.log(`Excluir funcionário com ID: ${id}`);
-      setEmployees(employees.filter((emp) => emp.id !== id));
+      const { data, error } = await supabase
+        .from("employees")
+        .select("*")
+        .order("first_name", { ascending: true });
+
+      if (error) throw error;
+
+      if (data) {
+        // Converter o status para o tipo correto
+        const typedEmployees = data.map(emp => ({
+          ...emp,
+          status: emp.status as Employee["status"]
+        }));
+        
+        setEmployees(typedEmployees);
+      }
     } catch (error) {
-      setError("Erro ao excluir funcionário");
-      console.error(error);
+      console.error("Erro ao buscar funcionários:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível carregar os funcionários.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleViewDocuments = (id: string) => {
-    onEmployeeSelect(id);
-    onTabChange("details");
+  // Filtrar funcionários com base nos critérios de pesquisa e filtros
+  const filterEmployees = () => {
+    let filtered = [...employees];
+
+    // Filtrar por termo de pesquisa
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      filtered = filtered.filter(
+        (emp) =>
+          emp.first_name.toLowerCase().includes(term) ||
+          emp.last_name.toLowerCase().includes(term) ||
+          emp.email.toLowerCase().includes(term) ||
+          emp.position.toLowerCase().includes(term)
+      );
+    }
+
+    // Filtrar por departamento
+    if (departmentFilter !== "all") {
+      filtered = filtered.filter((emp) => emp.department === departmentFilter);
+    }
+
+    // Filtrar por status
+    if (statusFilter !== "all") {
+      filtered = filtered.filter((emp) => emp.status === statusFilter);
+    }
+
+    setFilteredEmployees(filtered);
   };
 
-  return (
-    <div className="w-full h-full bg-gray-50 p-6">
-      <div className="flex justify-between items-center mb-6">
-        <div className="flex items-center">
-          <Users className="h-6 w-6 mr-2 text-primary" />
-          <h1 className="text-2xl font-bold text-gray-800">
-            Gestão de Funcionários
-          </h1>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={onImportEmployees}
-            className="flex items-center"
-          >
-            <Upload className="h-4 w-4 mr-2" />
-            Importar
-          </Button>
-          <Button
-            variant="outline"
-            onClick={onExportEmployees}
-            className="flex items-center"
-          >
-            <Download className="h-4 w-4 mr-2" />
-            Exportar
-          </Button>
-          <Button onClick={onAddEmployee} className="flex items-center">
-            <Plus className="h-4 w-4 mr-2" />
-            Adicionar Funcionário
-          </Button>
-        </div>
-      </div>
+  // Manipuladores de eventos
+  const handleTabChange = (tab: "list" | "details" | "onboarding") => {
+    setCurrentTab(tab);
+    onTabChange(tab);
+  };
 
-      {error && (
-        <div className="bg-red-100 text-red-700 p-4 rounded mb-4">{error}</div>
-      )}
+  const handleViewDetails = (id: string) => {
+    setCurrentEmployeeId(id);
+    setCurrentTab("details");
+    onEmployeeSelect(id);
+  };
 
-      <Tabs
-        value={activeTab}
-        onValueChange={onTabChange}
-        className="w-full space-y-6"
-      >
-        <div className="flex justify-between items-center">
-          <TabsList>
-            <TabsTrigger value="list" className="px-6">
-              Lista de Funcionários
-            </TabsTrigger>
-            <TabsTrigger
-              value="details"
-              className="px-6"
-              disabled={!selectedEmployeeId}
-            >
-              Detalhes do Funcionário
-            </TabsTrigger>
-          </TabsList>
+  const handleBackToList = () => {
+    setCurrentTab("list");
+    onTabChange("list");
+  };
 
-          {activeTab === "list" && (
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-                <Input
-                  placeholder="Buscar funcionários..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-10 w-[250px]"
-                />
+  const handleAddEmployee = async () => {
+    try {
+      // Validar campos obrigatórios
+      if (!newEmployee.first_name || !newEmployee.last_name || !newEmployee.email || !newEmployee.position || !newEmployee.department) {
+        toast({
+          title: "Erro",
+          description: "Por favor, preencha todos os campos obrigatórios.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Inserir novo funcionário no Supabase
+      const { data, error } = await supabase.from("employees").insert([
+        {
+          first_name: newEmployee.first_name,
+          last_name: newEmployee.last_name,
+          email: newEmployee.email,
+          phone: newEmployee.phone || null,
+          position: newEmployee.position,
+          department: newEmployee.department,
+          status: newEmployee.status,
+          join_date: newEmployee.join_date,
+          address: newEmployee.address || null,
+          national_id: newEmployee.national_id || null,
+          tax_id: newEmployee.tax_id || null,
+          social_security_number: newEmployee.social_security_number || null,
+          bank_account: newEmployee.bank_account || null,
+          emergency_contact_name: newEmployee.emergency_contact_name || null,
+          emergency_contact_relationship: newEmployee.emergency_contact_relationship || null,
+          emergency_contact_phone: newEmployee.emergency_contact_phone || null,
+          avatar_url: newEmployee.avatar_url || null,
+        },
+      ]).select();
+
+      if (error) throw error;
+
+      // Fechar diálogo e atualizar lista
+      setShowAddEmployeeDialog(false);
+      
+      // Resetar formulário
+      setNewEmployee({
+        first_name: "",
+        last_name: "",
+        email: "",
+        phone: "",
+        position: "",
+        department: "",
+        status: "active",
+        join_date: new Date().toISOString().split("T")[0],
+      });
+      
+      // Atualizar lista de funcionários
+      fetchEmployees();
+      
+      toast({
+        title: "Sucesso",
+        description: "Funcionário adicionado com sucesso.",
+      });
+      
+      // Se houver callback, chamar
+      if (onAddEmployee) onAddEmployee();
+      
+      // Se houver dados retornados, navegar para detalhes
+      if (data && data.length > 0) {
+        handleViewDetails(data[0].id);
+      }
+    } catch (error) {
+      console.error("Erro ao adicionar funcionário:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível adicionar o funcionário.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDeleteEmployee = async (id: string) => {
+    setEmployeeToDelete(id);
+    setShowDeleteDialog(true);
+  };
+
+  const confirmDeleteEmployee = async () => {
+    try {
+      // Excluir funcionário do Supabase
+      const { error } = await supabase
+        .from("employees")
+        .delete()
+        .eq("id", employeeToDelete);
+
+      if (error) throw error;
+
+      // Fechar diálogo e atualizar lista
+      setShowDeleteDialog(false);
+      setEmployeeToDelete("");
+      
+      // Atualizar lista de funcionários
+      fetchEmployees();
+      
+      toast({
+        title: "Sucesso",
+        description: "Funcionário excluído com sucesso.",
+      });
+      
+      // Se estiver na página de detalhes do funcionário excluído, voltar para a lista
+      if (currentTab === "details" && currentEmployeeId === employeeToDelete) {
+        handleBackToList();
+      }
+    } catch (error) {
+      console.error("Erro ao excluir funcionário:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível excluir o funcionário.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleEditEmployee = (id: string) => {
+    navigate(`/hr/employees/edit/${id}`);
+  };
+
+  const handleImportEmployees = () => {
+    // Implementação de importação de funcionários
+    if (onImportEmployees) onImportEmployees();
+  };
+
+  const handleExportEmployees = () => {
+    // Implementação de exportação de funcionários
+    if (onExportEmployees) onExportEmployees();
+  };
+
+  const handleInputChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) => {
+    const { name, value } = e.target;
+    setNewEmployee((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSelectChange = (name: string, value: string) => {
+    setNewEmployee((prev) => ({ ...prev, [name]: value }));
+  };
+
+  // Função para iniciar o processo de onboarding
+  const handleStartOnboarding = () => {
+    setCurrentEmployeeId(null);
+    setCurrentTab("onboarding");
+  };
+
+  // Função para finalizar o onboarding
+  const handleOnboardingComplete = () => {
+    toast({
+      title: "Onboarding concluído",
+      description: "O funcionário foi integrado com sucesso.",
+    });
+    setCurrentTab("list");
+    // Recarregar a lista de funcionários
+    fetchEmployees();
+  };
+
+  // Função para cancelar o onboarding
+  const handleOnboardingCancel = () => {
+    setCurrentTab("list");
+  };
+
+  // Renderização condicional com base na aba atual
+  const renderView = () => {
+    switch (currentTab) {
+      case "details":
+        return (
+          <EmployeeDetail
+            employeeId={currentEmployeeId!}
+            onBack={handleBackToList}
+            onEdit={(id) => handleEditEmployee(id)}
+          />
+        );
+      case "onboarding":
+        return (
+          <EmployeeOnboarding
+            employeeId={currentEmployeeId}
+            onComplete={handleOnboardingComplete}
+            onCancel={handleOnboardingCancel}
+          />
+        );
+      case "list":
+      default:
+        return (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <h2 className="text-2xl font-bold">Gestão de Funcionários</h2>
+              <div className="flex space-x-2">
+                <Button onClick={handleStartOnboarding}>
+                  <UserPlus className="mr-2 h-4 w-4" />
+                  Novo Funcionário
+                </Button>
+                <Button variant="outline">
+                  <Download className="mr-2 h-4 w-4" />
+                  Exportar
+                </Button>
               </div>
-              <Select
-                value={departmentFilter}
-                onValueChange={setDepartmentFilter}
-              >
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Departamento" />
-                </SelectTrigger>
-                <SelectContent>
-                  {departments.map((dept) => (
-                    <SelectItem key={dept.id} value={dept.id}>
-                      {dept.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[150px]">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  {statuses.map((status) => (
-                    <SelectItem key={status.id} value={status.id}>
-                      {status.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button variant="outline" size="icon">
-                <Filter className="h-4 w-4" />
-              </Button>
             </div>
-          )}
-        </div>
-
-        <TabsContent value="list" className="mt-0">
-          <Card className="border-none shadow-sm">
-            <CardContent className="p-0">
-              {isLoading ? (
-                <div className="p-4 text-center">Carregando...</div>
-              ) : (
+            
+            <Tabs defaultValue="ativos">
+              <TabsList>
+                <TabsTrigger value="ativos">Funcionários Ativos</TabsTrigger>
+                <TabsTrigger value="inativos">Inativos</TabsTrigger>
+                <TabsTrigger value="todos">Todos</TabsTrigger>
+              </TabsList>
+              <TabsContent value="ativos" className="mt-4">
                 <EmployeeTable
+                  employees={employees.filter(emp => emp.status === 'active').map(emp => ({
+                    id: emp.id,
+                    name: `${emp.first_name} ${emp.last_name}`,
+                    position: emp.position,
+                    department: emp.department,
+                    status: emp.status === 'on_leave' ? 'on-leave' : 
+                           emp.status === 'terminated' ? 'inactive' : emp.status,
+                    joinDate: emp.join_date
+                  }))}
+                  isLoading={isLoading}
                   onViewDetails={handleViewDetails}
                   onEdit={handleEditEmployee}
                   onDelete={handleDeleteEmployee}
-                  onViewDocuments={handleViewDocuments}
-                  employees={employees}
-                  isLoading={isLoading}
+                  onViewDocuments={handleViewDetails}
                 />
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="details" className="mt-0">
-          {selectedEmployeeId ? (
-            <EmployeeDetail
-              employeeId={selectedEmployeeId}
-              onBack={() => onTabChange("list")}
-              onEdit={(id) => console.log("Edit employee", id)}
-            />
-          ) : (
-            <Card>
-              <CardHeader>
-                <CardTitle>Nenhum Funcionário Selecionado</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p>
-                  Por favor, selecione um funcionário da lista para ver os
-                  detalhes.
-                </p>
-              </CardContent>
-            </Card>
-          )}
-        </TabsContent>
-      </Tabs>
-
-      {activeTab === "list" && (
-        <div className="mt-6">
-          <h2 className="text-lg font-semibold mb-3">
-            Estatísticas de Funcionários
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="text-sm text-gray-500">
-                      Total de Funcionários
-                    </p>
-                    <p className="text-2xl font-bold">124</p>
-                  </div>
-                  <Users className="h-8 w-8 text-primary opacity-70" />
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="text-sm text-gray-500">Ativos</p>
-                    <p className="text-2xl font-bold">112</p>
-                  </div>
-                  <Badge className="bg-green-100 text-green-800 text-xs px-3 py-1">
-                    90%
-                  </Badge>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="text-sm text-gray-500">De Férias</p>
-                    <p className="text-2xl font-bold">8</p>
-                  </div>
-                  <Badge className="bg-amber-100 text-amber-800 text-xs px-3 py-1">
-                    6%
-                  </Badge>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="text-sm text-gray-500">Inativos</p>
-                    <p className="text-2xl font-bold">4</p>
-                  </div>
-                  <Badge className="bg-red-100 text-red-800 text-xs px-3 py-1">
-                    4%
-                  </Badge>
-                </div>
-              </CardContent>
-            </Card>
+              </TabsContent>
+              <TabsContent value="inativos" className="mt-4">
+                <EmployeeTable
+                  employees={employees.filter(emp => emp.status !== 'active').map(emp => ({
+                    id: emp.id,
+                    name: `${emp.first_name} ${emp.last_name}`,
+                    position: emp.position,
+                    department: emp.department,
+                    status: emp.status === 'on_leave' ? 'on-leave' : 
+                           emp.status === 'terminated' ? 'inactive' : emp.status,
+                    joinDate: emp.join_date
+                  }))}
+                  isLoading={isLoading}
+                  onViewDetails={handleViewDetails}
+                  onEdit={handleEditEmployee}
+                  onDelete={handleDeleteEmployee}
+                  onViewDocuments={handleViewDetails}
+                />
+              </TabsContent>
+              <TabsContent value="todos" className="mt-4">
+                <EmployeeTable
+                  employees={employees.map(emp => ({
+                    id: emp.id,
+                    name: `${emp.first_name} ${emp.last_name}`,
+                    position: emp.position,
+                    department: emp.department,
+                    status: emp.status === 'on_leave' ? 'on-leave' : 
+                           emp.status === 'terminated' ? 'inactive' : emp.status,
+                    joinDate: emp.join_date
+                  }))}
+                  isLoading={isLoading}
+                  onViewDetails={handleViewDetails}
+                  onEdit={handleEditEmployee}
+                  onDelete={handleDeleteEmployee}
+                  onViewDocuments={handleViewDetails}
+                />
+              </TabsContent>
+            </Tabs>
           </div>
-        </div>
-      )}
+        );
+    }
+  };
+
+  return (
+    <div className="container mx-auto py-6">
+      {renderView()}
     </div>
   );
 };
